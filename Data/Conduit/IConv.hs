@@ -1,6 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 
--- | A "Data.Conduit#t:Conduit" based on "Codec.Text.IConv" for
+-- | A "Data.Conduit#t:Conduit" based on the iconv library for
 -- converting a "Data.ByteString" from one character set encoding to another
 module Data.Conduit.IConv
     (
