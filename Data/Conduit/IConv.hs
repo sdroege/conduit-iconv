@@ -7,6 +7,9 @@ module Data.Conduit.IConv
       convert
     ) where
 
+import Data.List (isPrefixOf, isInfixOf)
+import Data.Char (toLower)
+
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import qualified Data.ByteString as B
@@ -107,10 +110,28 @@ iconvConvert inputEncoding outputEncoding input =
 
 
 -- Thin wrapper around iconv_open()
-newtype IConvT = IConvT (ForeignPtr IConvT)
+data IConvT = IConvT (ForeignPtr IConvT) Double
 data IConvOpenError =
     UnsupportedConversion
   | UnexpectedOpenError Errno
+
+-- Some rather arbitrary numbers for the number of bytes
+-- per character in different character encodings. This
+-- is just to optimize allocations a bit but more accurate
+-- numbers would be good to have.
+bytesPerChar :: String -> Double
+bytesPerChar encoding =
+    case () of
+        _ | "utf8"     `isInfixOf`  normalizedEncoding -> 1.3
+        _ | "utf7"     `isInfixOf`  normalizedEncoding -> 1.5
+          | "utf16"    `isInfixOf`  normalizedEncoding -> 2.0
+          | "ucs2"     `isInfixOf`  normalizedEncoding -> 2.0
+          | "utf32"    `isInfixOf`  normalizedEncoding -> 4.0
+          | "ucs4"     `isInfixOf`  normalizedEncoding -> 4.0
+          | "gb18030"  `isPrefixOf` normalizedEncoding -> 4.0
+          | otherwise                                  -> 1.0
+  where
+    normalizedEncoding = filter (`notElem` "_-/") . map toLower $ encoding
 
 iconvOpen :: String -> String -> Either IConvOpenError IConvT
 iconvOpen inputEncoding outputEncoding = unsafePerformIO $ do
@@ -127,7 +148,7 @@ iconvOpen inputEncoding outputEncoding = unsafePerformIO $ do
                             UnexpectedOpenError errno
         _    -> do
                     fPtr <- newForeignPtr c_iconv_close ptr
-                    return $ Right (IConvT fPtr)
+                    return $ Right (IConvT fPtr (bytesPerChar outputEncoding / bytesPerChar inputEncoding))
 
 -- Thin wrapper around iconv()
 data IConvResult =
@@ -137,12 +158,12 @@ data IConvResult =
   | UnexpectedError Errno
 
 iconv :: IConvT -> B.ByteString -> IConvResult
-iconv (IConvT fPtr) input = unsafePerformIO $
+iconv (IConvT fPtr outRatio) input = unsafePerformIO $
     withForeignPtr fPtr                          $ \ptr             ->
     BU.unsafeUseAsCStringLen input               $ \(inPtr, inLeft) ->
     with inPtr                                   $ \inPtrPtr        ->
     with (fromIntegral inLeft)                   $ \inLeftPtr       ->
-    let outLeft = max (inLeft + 16) 4096 in                             -- 16 byte padding just in case
+    let outLeft = max (ceiling (fromIntegral inLeft * outRatio) + 16) 4096 in
     mallocBytes outLeft >>=                        \outPtr          ->
     BU.unsafePackCStringLen (outPtr, outLeft)  >>= \output          ->   -- created here already to be garbage collected in case of async exceptions
     with outPtr                                  $ \outPtrPtr       ->
