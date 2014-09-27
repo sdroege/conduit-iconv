@@ -73,17 +73,19 @@ iconvConvert inputEncoding outputEncoding input =
             Right ctx                                -> convertInput ctx B.empty [] input
 
   where
+    filterNonEmpty = filter (not . B.null)
+
     convertInput ctx remaining converted newInput
       | B.null newInput  =
-            ConvertSuccess converted (convertInput ctx remaining [])
+            ConvertSuccess (filterNonEmpty converted) (convertInput ctx remaining [])
 
       | B.null remaining =
             let res = iconv ctx newInput
             in
                 case res of
-                    Converted                 c r -> ConvertSuccess (converted ++ [c]) (convertInput ctx r [])
+                    Converted                 c r -> ConvertSuccess (filterNonEmpty $ converted ++ [c]) (convertInput ctx r [])
                     MoreData                  c r -> convertInput ctx B.empty (converted ++ [c]) r
-                    InvalidInput              c _ -> ConvertSuccess (converted ++ [c]) (const ConvertInvalidInputError)
+                    InvalidInput              c _ -> ConvertSuccess (filterNonEmpty $ converted ++ [c]) (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
       | otherwise =
@@ -95,17 +97,17 @@ iconvConvert inputEncoding outputEncoding input =
                                                          consumedInput = processed - B.length remaining
                                                      in
                                                          if processed < B.length remaining then
-                                                             ConvertSuccess converted (convertInput ctx (remaining `B.append` newInput) [])
+                                                             ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
                                                          else
                                                              convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
                     MoreData                  c r -> let processed = B.length tmpInput - B.length r
                                                          consumedInput = processed - B.length remaining
                                                      in
                                                          if processed < B.length remaining then
-                                                             ConvertSuccess converted (convertInput ctx (remaining `B.append` newInput) [])
+                                                             ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
                                                          else
                                                              convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
-                    InvalidInput              c _ -> ConvertSuccess (converted ++ [c]) (const ConvertInvalidInputError)
+                    InvalidInput              c _ -> ConvertSuccess (filterNonEmpty $ converted ++ [c]) (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
 
