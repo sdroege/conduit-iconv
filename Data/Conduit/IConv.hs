@@ -34,11 +34,10 @@ import System.IO.Unsafe (unsafePerformIO)
 convert :: Monad m => String -- ^ Name of input character encoding
                    -> String -- ^ Name of output character encoding
                    -> Conduit B.ByteString m B.ByteString
-convert inputEncoding outputEncoding =
-    let initialConvert = iconvConvert inputEncoding outputEncoding
-    in run initialConvert
-
+convert inputEncoding outputEncoding = run initialConvert
   where
+    initialConvert = iconvConvert inputEncoding outputEncoding
+
     run f = do
         maybeInput <- await
         case maybeInput of
@@ -93,20 +92,22 @@ iconvConvert inputEncoding outputEncoding input =
                 res      = iconv ctx tmpInput
             in
                 case res of
-                    Converted                 c r -> let processed = B.length tmpInput - B.length r
+                    Converted                 c r -> if processed < B.length remaining then
+                                                       ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
+                                                     else
+                                                       convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
+
+                                                     where
+                                                         processed = B.length tmpInput - B.length r
                                                          consumedInput = processed - B.length remaining
-                                                     in
-                                                         if processed < B.length remaining then
-                                                             ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
-                                                         else
-                                                             convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
-                    MoreData                  c r -> let processed = B.length tmpInput - B.length r
+                    MoreData                  c r -> if processed < B.length remaining then
+                                                       ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
+                                                     else
+                                                       convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
+
+                                                     where
+                                                         processed = B.length tmpInput - B.length r
                                                          consumedInput = processed - B.length remaining
-                                                     in
-                                                         if processed < B.length remaining then
-                                                             ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
-                                                         else
-                                                             convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
                     InvalidInput              c _ -> ConvertSuccess (filterNonEmpty $ converted ++ [c]) (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
