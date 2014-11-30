@@ -20,6 +20,7 @@ import Control.Applicative ((<$>))
 import Foreign hiding (unsafePerformIO)
 import Foreign.C
 import System.IO.Unsafe (unsafePerformIO)
+import Control.Exception (mask_)
 
 -- | Convert text from one named character encoding to another.
 --
@@ -137,7 +138,8 @@ bytesPerChar encoding =
     normalizedEncoding = filter (`notElem` "_-/") . map toLower $ encoding
 
 iconvOpen :: String -> String -> Either IConvOpenError IConvT
-iconvOpen inputEncoding outputEncoding = unsafePerformIO $ do
+iconvOpen inputEncoding outputEncoding = unsafePerformIO $
+    mask_ $ do
     ptr <- withCString inputEncoding  $ \inputEncodingPtr  ->
            withCString outputEncoding $ \outputEncodingPtr ->
                 c_iconv_open outputEncodingPtr inputEncodingPtr
@@ -162,13 +164,13 @@ data IConvResult =
 
 iconv :: IConvT -> B.ByteString -> IConvResult
 iconv (IConvT fPtr outRatio) input = unsafePerformIO $
+    mask_ $
     withForeignPtr fPtr                          $ \ptr             ->
     BU.unsafeUseAsCStringLen input               $ \(inPtr, inLeft) ->
     with inPtr                                   $ \inPtrPtr        ->
     with (fromIntegral inLeft)                   $ \inLeftPtr       ->
     let outLeft = max (ceiling (fromIntegral inLeft * outRatio) + 16) 4096 in
     mallocBytes outLeft >>=                        \outPtr          ->
-    BU.unsafePackCStringLen (outPtr, outLeft)  >>= \output          ->   -- created here already to be garbage collected in case of async exceptions
     with outPtr                                  $ \outPtrPtr       ->
     with (fromIntegral outLeft)                  $ \outLeftPtr      -> do
 
@@ -176,11 +178,16 @@ iconv (IConvT fPtr outRatio) input = unsafePerformIO $
 
         inLeft'  <- fromIntegral <$> peek inLeftPtr
         outLeft' <- fromIntegral <$> peek outLeftPtr
-        let output'   = B.take (outLeft - outLeft') output
-            remaining = B.drop (inLeft - inLeft') input
+        let outLen = outLeft - outLeft'
+            remainingLen = inLeft - inLeft'
+            remaining = B.drop remainingLen input
+
+        outPtr' <- reallocBytes outPtr outLen
+        -- Attention: from here on outPtr is pointing to invalid memory!
+        output <- BU.unsafePackCStringLen (outPtr', outLen)
 
         if res /= (-1) then
-           return $ Converted output' remaining
+           return $ Converted output remaining
         else do
            errno <- getErrno
            case () of
@@ -188,13 +195,13 @@ iconv (IConvT fPtr outRatio) input = unsafePerformIO $
                                         if outLeft == outLeft' then          -- we processed nothing and it's still too big?!
                                             UnexpectedError errno
                                         else
-                                            MoreData output' remaining
-               | errno == eINVAL -> return $ Converted output' remaining   -- nothing converted here is no error as with future data we might be able to convert
+                                            MoreData output remaining
+               | errno == eINVAL -> return $ Converted output remaining      -- nothing converted here is no error as with future data we might be able to convert
                | errno == eILSEQ -> return $
                                         if outLeft == outLeft' then          -- we processed nothing
                                             UnexpectedError errno
                                         else
-                                            InvalidInput output' remaining
+                                            InvalidInput output remaining
                | otherwise       -> return $ UnexpectedError errno
 
 
