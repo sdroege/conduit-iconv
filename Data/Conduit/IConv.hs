@@ -8,7 +8,6 @@ module Data.Conduit.IConv
     ) where
 
 import Data.Conduit
-import qualified Data.Conduit.List as CL
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as BU
 
@@ -43,10 +42,7 @@ convert inputEncoding outputEncoding = run initialConvert
             Just input -> do
                             let res = f input
                             case res of
-                                ConvertSuccess c f'                -> do
-                                                                          CL.sourceList c
-                                                                          run f'
-
+                                ConvertSuccess c f'                -> yield c >> run f'
                                 ConvertUnsupportedConversionError  -> fail "Unsupported conversion"
                                 ConvertUnexpectedOpenError s       -> fail ("Unexpected open error: " ++ s)
                                 ConvertInvalidInputError           -> fail "Invalid input"
@@ -54,7 +50,7 @@ convert inputEncoding outputEncoding = run initialConvert
 
 -- Stream based API around iconv()
 data ConvertResult =
-    ConvertSuccess [B.ByteString] (B.ByteString -> ConvertResult)
+    ConvertSuccess B.ByteString (B.ByteString -> ConvertResult)
   | ConvertUnsupportedConversionError
   | ConvertUnexpectedOpenError String
   | ConvertInvalidInputError
@@ -67,46 +63,51 @@ iconvConvert inputEncoding outputEncoding input =
         case eCtx of
             Left UnsupportedConversion               -> ConvertUnsupportedConversionError
             Left (UnexpectedOpenError (Errno errno)) -> ConvertUnexpectedOpenError (show errno)
-            Right ctx                                -> convertInput ctx B.empty [] input
+            Right ctx                                -> convertInput ctx B.empty input
 
   where
-    filterNonEmpty = filter (not . B.null)
-
-    convertInput ctx remaining converted newInput
+    convertInput ctx converted newInput
       | B.null newInput  =
-            ConvertSuccess (filterNonEmpty converted) (convertInput ctx remaining [])
+            ConvertSuccess converted (convertInput ctx B.empty)
 
-      | B.null remaining =
-            let res = iconv ctx newInput
+      | otherwise =
+            let res = iconv ctx newInput converted
             in
                 case res of
-                    Converted                 c r -> ConvertSuccess (filterNonEmpty $ converted ++ [c]) (convertInput ctx r [])
-                    MoreData                  c r -> convertInput ctx B.empty (converted ++ [c]) r
-                    InvalidInput              c _ -> ConvertSuccess (filterNonEmpty $ converted ++ [c]) (const ConvertInvalidInputError)
+                    Converted                 c r -> ConvertSuccess c (convertInputWithRemaining ctx r)
+                    MoreData                  c r -> ConvertSuccess c (convertInputWithRemaining ctx r)
+                    InvalidInput              c _ -> ConvertSuccess c (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
+
+    convertInputWithRemaining ctx remaining newInput
+      | B.null remaining =
+            convertInput ctx B.empty newInput
+
+      | B.null newInput  =
+            ConvertSuccess B.empty (convertInputWithRemaining ctx remaining)
 
       | otherwise =
             let tmpInput = remaining `B.append` B.take 32 newInput
-                res      = iconv ctx tmpInput
+                res      = iconv ctx tmpInput B.empty
             in
                 case res of
                     Converted                 c r -> if processed < B.length remaining then
-                                                       ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
+                                                         ConvertSuccess B.empty (convertInputWithRemaining ctx (remaining `B.append` newInput))
                                                      else
-                                                       convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
+                                                         convertInput ctx c (B.drop consumedInput newInput)
 
                                                      where
                                                          processed = B.length tmpInput - B.length r
                                                          consumedInput = processed - B.length remaining
                     MoreData                  c r -> if processed < B.length remaining then
-                                                       ConvertSuccess (filterNonEmpty converted) (convertInput ctx (remaining `B.append` newInput) [])
+                                                         ConvertSuccess B.empty (convertInputWithRemaining ctx (remaining `B.append` newInput))
                                                      else
-                                                       convertInput ctx B.empty (converted ++ [c]) (B.drop consumedInput newInput)
+                                                         convertInput ctx c (B.drop consumedInput newInput)
 
                                                      where
                                                          processed = B.length tmpInput - B.length r
                                                          consumedInput = processed - B.length remaining
-                    InvalidInput              c _ -> ConvertSuccess (filterNonEmpty $ converted ++ [c]) (const ConvertInvalidInputError)
+                    InvalidInput              c _ -> ConvertSuccess c (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
 
@@ -141,47 +142,56 @@ data IConvResult =
   | InvalidInput B.ByteString B.ByteString
   | UnexpectedError Errno
 
-iconv :: IConvT -> B.ByteString -> IConvResult
-iconv (IConvT fPtr) input = unsafePerformIO $
-    mask_ $
-    withForeignPtr fPtr                          $ \ptr             ->
-    BU.unsafeUseAsCStringLen input               $ \(inPtr, inLeft) ->
-    with inPtr                                   $ \inPtrPtr        ->
-    with (fromIntegral inLeft)                   $ \inLeftPtr       ->
-    let outLeft = max (fromIntegral inLeft * 4 + 16) 4096 in
-    mallocBytes outLeft >>=                        \outPtr          ->
-    with outPtr                                  $ \outPtrPtr       ->
-    with (fromIntegral outLeft)                  $ \outLeftPtr      -> do
+iconv :: IConvT -> B.ByteString -> B.ByteString -> IConvResult
+iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
+    let outputPrefixLen = B.length outputPrefix
+        inputLen        = B.length input
+        outputLen       = max (inputLen * 4 + 16 + outputPrefixLen) 4096
+        convertLen      = outputLen - outputPrefixLen
 
-        res <- c_iconv ptr inPtrPtr inLeftPtr outPtrPtr outLeftPtr
+    outputPtr <- mallocBytes outputLen
+    BU.unsafeUseAsCString outputPrefix $ \outputPrefixPtr ->
+        copyBytes outputPtr outputPrefixPtr outputPrefixLen
 
-        inLeft'  <- fromIntegral <$> peek inLeftPtr
-        outLeft' <- fromIntegral <$> peek outLeftPtr
-        let outLen = outLeft - outLeft'
-            remainingLen = inLeft - inLeft'
-            remaining = B.drop remainingLen input
+    let outputConvPtr = plusPtr outputPtr outputPrefixLen
 
-        outPtr' <- reallocBytes outPtr outLen
-        -- Attention: from here on outPtr is pointing to invalid memory!
-        output <- BU.unsafePackCStringLen (outPtr', outLen)
+    (res, readCount, writeCount) <-
+        withForeignPtr fPtr            $ \ptr              ->
+        BU.unsafeUseAsCString input    $ \inputPtr         ->
+        with inputPtr                  $ \inputPtrPtr      ->
+        with (fromIntegral inputLen)   $ \inputLenPtr      ->
+        with outputConvPtr             $ \outputConvPtrPtr ->
+        with (fromIntegral convertLen) $ \convertLenPtr    -> do
+            res        <- c_iconv ptr inputPtrPtr inputLenPtr outputConvPtrPtr convertLenPtr
+            readCount  <- (`subtract` inputLen)   . fromIntegral <$> peek inputLenPtr
+            writeCount <- (`subtract` convertLen) . fromIntegral <$> peek convertLenPtr
+            return (res, readCount, writeCount)
 
-        if res /= (-1) then
-           return $ Converted output remaining
-        else do
-           errno <- getErrno
-           case () of
-             _ | errno == e2BIG  -> return $
-                                        if outLeft == outLeft' then          -- we processed nothing and it's still too big?!
-                                            UnexpectedError errno
-                                        else
-                                            MoreData output remaining
-               | errno == eINVAL -> return $ Converted output remaining      -- nothing converted here is no error as with future data we might be able to convert
-               | errno == eILSEQ -> return $
-                                        if outLeft == outLeft' then          -- we processed nothing
-                                            UnexpectedError errno
-                                        else
+    let remaining    = B.drop readCount input
+        convertedLen = outputPrefixLen + writeCount
+
+    -- Shadowing outputPtr to prevent accidential usage of old outputPtr
+    outputPtr <- reallocBytes outputPtr convertedLen
+    output <- BU.unsafePackCStringLen (outputPtr, convertedLen)
+
+    if res /= (-1) then
+        return $ Converted output remaining
+    else do
+        errno <- getErrno
+        case () of
+            _ | errno == e2BIG  -> return $
+                                       if writeCount == 0 then          -- we processed nothing and it's still too big?!
+                                           UnexpectedError errno
+                                       else
+                                           MoreData output remaining
+
+              | errno == eINVAL -> return $ Converted output remaining  -- nothing converted here is no error as with future data we might be able to convert
+              | errno == eILSEQ -> return $
+                                       if writeCount == 0 then          -- we processed nothing
+                                           UnexpectedError errno
+                                       else
                                             InvalidInput output remaining
-               | otherwise       -> return $ UnexpectedError errno
+              | otherwise       -> return $ UnexpectedError errno
 
 
 -- Taken from Codec.Text.IConv
