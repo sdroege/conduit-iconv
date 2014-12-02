@@ -37,54 +37,42 @@ chunkByteString n a b c d s = case n `mod` 5 of
                                 safeMod _ 0 = 0
                                 safeMod m o = abs $ m `mod` abs o
 
-prop_identityASCIIToUTF8 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityASCIIToUTF8 inString n a b c d = input == output
-    where input = B.map (\w -> if w >= 128 then w - 128 else w) . BC.pack $ inString
-          cInput = chunkByteString n a b c d input
-          converted = runIdentity $ CL.sourceList cInput $$ I.convert "ASCII" "UTF-8" =$ CL.consume
-          output = B.concat converted
-
 prop_identityLatin1ToUTF8 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityLatin1ToUTF8 inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . BC.pack $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert "Latin1" "UTF-8" =$ CL.consume
-          output = T.unpack . TE.decodeUtf8 . B.concat $ converted
+prop_identityLatin1ToUTF8 = prop_identity BC.pack "Latin1" (T.unpack . TE.decodeUtf8) "UTF-8"
 
 prop_identityUTF8ToUTF16 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityUTF8ToUTF16 inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . TE.encodeUtf8 . T.pack $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert "UTF-8" "UTF-16LE" =$ CL.consume
-          output = T.unpack . TE.decodeUtf16LE . B.concat $ converted
+prop_identityUTF8ToUTF16 = prop_identity (TE.encodeUtf8 . T.pack) "UTF-8" (T.unpack . TE.decodeUtf16LE) "UTF-16LE"
 
 prop_identityUTF16ToUTF8 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityUTF16ToUTF8 inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . TE.encodeUtf16LE . T.pack $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert "UTF-16LE" "UTF-8" =$ CL.consume
-          output = T.unpack . TE.decodeUtf8 . B.concat $ converted
+prop_identityUTF16ToUTF8 = prop_identity (TE.encodeUtf16LE . T.pack) "UTF-16LE" (T.unpack . TE.decodeUtf8) "UTF-8"
 
 prop_identityUTF8ToUTF32 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityUTF8ToUTF32 inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . TE.encodeUtf8 . T.pack $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert "UTF-8" "UTF-32LE" =$ CL.consume
-          output = T.unpack . TE.decodeUtf32LE . B.concat $ converted
+prop_identityUTF8ToUTF32 = prop_identity (TE.encodeUtf8 . T.pack) "UTF-8" (T.unpack . TE.decodeUtf32LE) "UTF-32LE"
 
 prop_identityUTF16ToUTF32 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityUTF16ToUTF32 inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . TE.encodeUtf16LE . T.pack $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert "UTF-16LE" "UTF-32LE" =$ CL.consume
-          output = T.unpack . TE.decodeUtf32LE . B.concat $ converted
+prop_identityUTF16ToUTF32 = prop_identity (TE.encodeUtf16LE . T.pack) "UTF-16LE" (T.unpack . TE.decodeUtf32LE) "UTF-32LE"
 
 prop_identityUTF32ToUTF16 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityUTF32ToUTF16 inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . TE.encodeUtf32LE . T.pack $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert "UTF-32LE" "UTF-16LE" =$ CL.consume
-          output = T.unpack . TE.decodeUtf16LE . B.concat $ converted
+prop_identityUTF32ToUTF16 = prop_identity (TE.encodeUtf32LE . T.pack) "UTF-32LE" (T.unpack . TE.decodeUtf16LE) "UTF-16LE"
 
 prop_identityUTF32ToUTF8 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityUTF32ToUTF8 inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . TE.encodeUtf32LE . T.pack $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert "UTF-32LE" "UTF-8" =$ CL.consume
-          output = T.unpack . TE.decodeUtf8 . B.concat $ converted
+prop_identityUTF32ToUTF8 = prop_identity (TE.encodeUtf32LE . T.pack) "UTF-32LE" (T.unpack . TE.decodeUtf8) "UTF-8"
+
+prop_identity ::    (String -> BC.ByteString)
+                 -> String
+                 -> (BC.ByteString -> String)
+                 -> String
+                 -> String
+                 -> Int
+                 -> Int
+                 -> Int
+                 -> Int
+                 -> Int
+                 -> Bool
+prop_identity encode encodeTo decode decodeTo inString n a b c d = inString == output
+    where input = chunkByteString n a b c d . encode $ inString
+          converted = runIdentity $ CL.sourceList input $$ I.convert encodeTo decodeTo =$ CL.consume
+          output = decode . B.concat $ converted
 
 main :: IO ()
 main = defaultMain tests
@@ -92,13 +80,12 @@ main = defaultMain tests
 tests :: [Test]
 tests = [
             testGroup "QuickCheck Data.Conduit.IConv" [
-                  testProperty "identityASCIIToUTF8" prop_identityASCIIToUTF8
-                , testProperty "identityLatin1ToUTF8" prop_identityLatin1ToUTF8
-                , testProperty "identityUTF8ToUTF16" prop_identityUTF8ToUTF16
-                , testProperty "identityUTF16ToUTF8" prop_identityUTF16ToUTF8
-                , testProperty "identityUTF8ToUTF32" prop_identityUTF8ToUTF32
+                  testProperty "identityLatin1ToUTF8" prop_identityLatin1ToUTF8
+                , testProperty "identityUTF8ToUTF16"  prop_identityUTF8ToUTF16
+                , testProperty "identityUTF16ToUTF8"  prop_identityUTF16ToUTF8
+                , testProperty "identityUTF8ToUTF32"  prop_identityUTF8ToUTF32
                 , testProperty "identityUTF16ToUTF32" prop_identityUTF16ToUTF32
                 , testProperty "identityUTF32ToUTF16" prop_identityUTF32ToUTF16
-                , testProperty "identityUTF32ToUTF8" prop_identityUTF32ToUTF8
+                , testProperty "identityUTF32ToUTF8"  prop_identityUTF32ToUTF8
             ]
         ]
