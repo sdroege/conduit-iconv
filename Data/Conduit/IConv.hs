@@ -76,7 +76,10 @@ iconvConvert inputEncoding outputEncoding input =
                 case res of
                     Converted                 c r -> ConvertSuccess c (convertInputWithRemaining ctx r)
                     MoreData                  c r -> ConvertSuccess c (convertInputWithRemaining ctx r)
-                    InvalidInput              c _ -> ConvertSuccess c (const ConvertInvalidInputError)
+                    InvalidInput              c _ -> if B.null c then
+                                                         ConvertInvalidInputError
+                                                     else
+                                                         ConvertSuccess c (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
     convertInputWithRemaining ctx remaining newInput
@@ -107,7 +110,10 @@ iconvConvert inputEncoding outputEncoding input =
                                                      where
                                                          processed = B.length tmpInput - B.length r
                                                          consumedInput = processed - B.length remaining
-                    InvalidInput              c _ -> ConvertSuccess c (const ConvertInvalidInputError)
+                    InvalidInput              c _ -> if B.null c then
+                                                         ConvertInvalidInputError
+                                                     else
+                                                         ConvertSuccess c (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
 
@@ -190,7 +196,7 @@ iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
                                        if writeCount == 0 then          -- we processed nothing
                                            UnexpectedError errno
                                        else
-                                            InvalidInput output remaining
+                                           InvalidInput output remaining
               | otherwise       -> return $ UnexpectedError errno
 
 
