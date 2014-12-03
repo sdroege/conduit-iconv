@@ -178,7 +178,7 @@ iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
 
     -- Shadowing outputPtr to prevent accidential usage of old outputPtr
     outputPtr <- reallocBytes outputPtr convertedLen
-    output <- BU.unsafePackCStringLen (outputPtr, convertedLen)
+    output <- BU.unsafePackMallocCStringLen (outputPtr, convertedLen)
 
     if res /= (-1) then
         return $ Converted output remaining
