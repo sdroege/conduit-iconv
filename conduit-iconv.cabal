@@ -45,6 +45,21 @@ test-suite Tests
   default-language:   Haskell2010
   main-is:            Tests.hs
 
+benchmark Benchmarks
+  type:                exitcode-stdio-1.0
+  build-depends:       base == 4.*
+                     , mtl == 2.*
+                     , conduit
+                     , bytestring
+                     , text
+                     , conduit-iconv
+                     , criterion
+
+  ghc-options:        -O2 -Wall
+  hs-source-dirs:     benchmarks
+  default-language:   Haskell2010
+  main-is:            Benchmarks.hs
+
 source-repository head
   type:     git
   location: git://github.com/sdroege/conduit-iconv.git
