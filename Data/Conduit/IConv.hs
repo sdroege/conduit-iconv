@@ -152,7 +152,7 @@ iconv :: IConvT -> B.ByteString -> B.ByteString -> IConvResult
 iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
     let outputPrefixLen = B.length outputPrefix
         inputLen        = B.length input
-        outputLen       = max (inputLen * 4 + 16 + outputPrefixLen) 4096
+        outputLen       = inputLen * 4 + 16 + outputPrefixLen
         convertLen      = outputLen - outputPrefixLen
 
     outputPtr <- mallocBytes outputLen
