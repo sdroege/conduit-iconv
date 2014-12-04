@@ -1,7 +1,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 
--- | A "Data.Conduit#t:Conduit" based on the iconv library for
--- converting a "Data.ByteString" from one character set encoding to another
+-- | A `Conduit` based on the iconv library for
+-- converting a `Data.ByteString` from one character set encoding to another
 module Data.Conduit.IConv
     (
       convert
@@ -27,7 +27,7 @@ import Control.Exception (mask_)
 --
 -- Without this encoding errors will cause an exception.
 --
--- On errors this will call "Control.Monad#v:fail"
+-- On errors this will call `fail`
 convert :: Monad m => String -- ^ Name of input character encoding
                    -> String -- ^ Name of output character encoding
                    -> Conduit B.ByteString m B.ByteString
