@@ -11,6 +11,7 @@ module Data.Conduit.IConv
 import Data.Conduit
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as BU
+import qualified Data.ByteString.Internal as BI
 
 import Control.Applicative ((<$>))
 
@@ -194,48 +195,34 @@ iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $
         outputLen       = inputLen * 4 + 16 + outputPrefixLen
         convertLen      = outputLen - outputPrefixLen
 
-    -- We allocate via malloc(), which does not give us memory inside
-    -- the GC heap. But this allows us to realloc() the memory later
-    -- to the actual size.
-    outputPtr <- mallocBytes outputLen
+    (output, (res, readCount)) <- BI.createAndTrim' outputLen $ \outputPtr -> do
+        BU.unsafeUseAsCString outputPrefix $ \outputPrefixPtr ->
+            copyBytes outputPtr (castPtr outputPrefixPtr) outputPrefixLen
 
-    BU.unsafeUseAsCString outputPrefix $ \outputPrefixPtr ->
-        copyBytes outputPtr outputPrefixPtr outputPrefixLen
+        -- Newly converted output should start at this pointer
+        let outputConvPtr = plusPtr outputPtr outputPrefixLen
 
-    -- Newly converted output should start at this pointer
-    let outputConvPtr = plusPtr outputPtr outputPrefixLen
+        -- Do the actual conversion and calculate how many bytes we
+        -- read and wrote to update our state
+        (res, readCount, writeCount) <-
+            withForeignPtr fPtr            $ \ptr              ->
+            BU.unsafeUseAsCString input    $ \inputPtr         ->
+            with inputPtr                  $ \inputPtrPtr      ->
+            with (fromIntegral inputLen)   $ \inputLenPtr      ->
+            with outputConvPtr             $ \outputConvPtrPtr ->
+            with (fromIntegral convertLen) $ \convertLenPtr    -> do
+                res        <- c_iconv ptr inputPtrPtr inputLenPtr outputConvPtrPtr convertLenPtr
 
-    -- Do the actual conversion and calculate how many bytes we
-    -- read and wrote to update our state
-    (res, readCount, writeCount) <-
-        withForeignPtr fPtr            $ \ptr              ->
-        BU.unsafeUseAsCString input    $ \inputPtr         ->
-        with inputPtr                  $ \inputPtrPtr      ->
-        with (fromIntegral inputLen)   $ \inputLenPtr      ->
-        with outputConvPtr             $ \outputConvPtrPtr ->
-        with (fromIntegral convertLen) $ \convertLenPtr    -> do
-            res        <- c_iconv ptr inputPtrPtr inputLenPtr outputConvPtrPtr convertLenPtr
+                -- The length pointers will be updated by iconv to the still
+                -- remaining length after conversion. That means we can calculate
+                -- the read/written number of bytes with: old - new
+                readCount  <- (`subtract` inputLen)   . fromIntegral <$> peek inputLenPtr
+                writeCount <- (`subtract` convertLen) . fromIntegral <$> peek convertLenPtr
+                return (res, readCount, writeCount)
 
-            -- The length pointers will be updated by iconv to the still
-            -- remaining length after conversion. That means we can calculate
-            -- the read/written number of bytes with: old - new
-            readCount  <- (`subtract` inputLen)   . fromIntegral <$> peek inputLenPtr
-            writeCount <- (`subtract` convertLen) . fromIntegral <$> peek convertLenPtr
-            return (res, readCount, writeCount)
+        return (0, outputPrefixLen + writeCount, (res, readCount))
 
-    let remaining    = B.drop readCount input
-        convertedLen = outputPrefixLen + writeCount
-
-    -- Reallocate the memory to a memory area of the actual size. This
-    -- potentially allows the OS to reuse any memory we allocated too much and
-    -- in general does not cause the memory to be copied.
-    --
-    -- This will return NULL if the output size is 0, but the resulting
-    -- ByteString will then be the empty ByteString as expected.
-    --
-    -- Shadowing outputPtr to prevent accidential usage of old outputPtr
-    outputPtr <- reallocBytes outputPtr convertedLen
-    output <- BU.unsafePackMallocCStringLen (outputPtr, convertedLen)
+    let remaining = B.drop readCount input
 
     if res /= (-1) then
         return $ Converted output remaining
