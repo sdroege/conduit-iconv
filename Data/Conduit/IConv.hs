@@ -85,7 +85,6 @@ iconvConvert inputEncoding outputEncoding input =
             in
                 case res of
                     Converted                 c r -> ConvertSuccess c (convertInputWithRemaining ctx r)
-                    MoreData                  c r -> ConvertSuccess c (convertInputWithRemaining ctx r)
                     InvalidInput              c _ -> if B.null c then
                                                          ConvertInvalidInputError
                                                      else
@@ -120,18 +119,6 @@ iconvConvert inputEncoding outputEncoding input =
             in
                 case res of
                     Converted                 c r -> if processed < B.length remaining then
-                                                         -- Didn't convert the complete remainder. Let's try again next
-                                                         -- time with the additional newInput
-                                                         ConvertSuccess B.empty (convertInputWithRemaining ctx (remaining `B.append` newInput))
-                                                     else
-                                                         -- Converted the complete remainder. Now let's try to
-                                                         -- convert the remaining new input
-                                                         convertInput ctx c (B.drop consumedInput newInput)
-
-                                                     where
-                                                         processed = B.length tmpInput - B.length r
-                                                         consumedInput = processed - B.length remaining
-                    MoreData                  c r -> if processed < B.length remaining then
                                                          -- Didn't convert the complete remainder. Let's try again next
                                                          -- time with the additional newInput
                                                          ConvertSuccess B.empty (convertInputWithRemaining ctx (remaining `B.append` newInput))
@@ -180,7 +167,6 @@ iconvOpen inputEncoding outputEncoding = unsafePerformIO $
 -- Thin wrapper around iconv()
 data IConvResult =
     Converted B.ByteString B.ByteString
-  | MoreData B.ByteString B.ByteString
   | InvalidInput B.ByteString B.ByteString
   | UnexpectedError Errno
 
@@ -253,11 +239,7 @@ iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $
                 -- The output buffer was too small! This should not happen
                 -- because we overallocate for any possible output charset
                 -- encoding
-            _ | errno == e2BIG  -> return $
-                                       if writeCount == 0 then
-                                           UnexpectedError errno
-                                       else
-                                           MoreData output remaining
+            _ | errno == e2BIG  -> return $ UnexpectedError errno
 
                 -- Incomplete byte sequence was detected, which we might be
                 -- able to convert with further input later
