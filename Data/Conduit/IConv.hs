@@ -4,7 +4,8 @@
 -- converting a `Data.ByteString` from one character set encoding to another
 module Data.Conduit.IConv
     (
-      convert
+      CharacterEncoding
+    , convert
     ) where
 
 import Data.Conduit
@@ -18,6 +19,11 @@ import Foreign.C
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Exception (mask_)
 
+-- | Type synonym for character encoding names
+--
+-- See `convert` for details.
+type CharacterEncoding = String
+
 -- | Convert text from one named character encoding to another.
 --
 -- Encoding names can be e.g. @\"UTF-8\"@ or @\"ISO-8559-1\"@. Appending
@@ -28,8 +34,8 @@ import Control.Exception (mask_)
 -- Without this encoding errors will cause an exception.
 --
 -- On errors this will call `fail`
-convert :: Monad m => String -- ^ Name of input character encoding
-                   -> String -- ^ Name of output character encoding
+convert :: Monad m => CharacterEncoding -- ^ Name of input character encoding
+                   -> CharacterEncoding -- ^ Name of output character encoding
                    -> Conduit B.ByteString m B.ByteString
 convert inputEncoding outputEncoding = run initialConvert
   where
@@ -56,7 +62,7 @@ data ConvertResult =
   | ConvertInvalidInputError
   | ConvertUnexpectedConversionError String
 
-iconvConvert :: String -> String -> B.ByteString -> ConvertResult
+iconvConvert :: CharacterEncoding -> CharacterEncoding -> B.ByteString -> ConvertResult
 iconvConvert inputEncoding outputEncoding input =
     let eCtx = iconvOpen inputEncoding outputEncoding
     in
@@ -146,7 +152,7 @@ data IConvOpenError =
     UnsupportedConversion
   | UnexpectedOpenError Errno
 
-iconvOpen :: String -> String -> Either IConvOpenError IConvT
+iconvOpen :: CharacterEncoding -> CharacterEncoding -> Either IConvOpenError IConvT
 iconvOpen inputEncoding outputEncoding = unsafePerformIO $
     mask_ $ do -- mask async exceptions, we might otherwise leak
     ptr <- withCString inputEncoding  $ \inputEncodingPtr  ->

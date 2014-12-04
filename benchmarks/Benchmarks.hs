@@ -29,7 +29,7 @@ data SplitMode = None
                | TwoBytes
                | OneByte
 
-convert :: (String -> B.ByteString) -> String -> String -> SplitMode -> String -> [B.ByteString]
+convert :: (String -> B.ByteString) -> I.CharacterEncoding -> I.CharacterEncoding -> SplitMode -> String -> [B.ByteString]
 convert encode from to split input = runIdentity $ CL.sourceList preparedInput $$ I.convert from to =$ CL.consume
     where
         encodedInput = encode input

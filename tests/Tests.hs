@@ -59,9 +59,9 @@ prop_identityUTF32ToUTF8 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
 prop_identityUTF32ToUTF8 = prop_identity (TE.encodeUtf32LE . T.pack) "UTF-32LE" (T.unpack . TE.decodeUtf8) "UTF-8"
 
 prop_identity ::    (String -> BC.ByteString)
-                 -> String
+                 -> I.CharacterEncoding
                  -> (BC.ByteString -> String)
-                 -> String
+                 -> I.CharacterEncoding
                  -> String
                  -> Int
                  -> Int
