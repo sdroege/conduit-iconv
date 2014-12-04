@@ -66,6 +66,16 @@ iconvConvert inputEncoding outputEncoding input =
             Right ctx                                -> convertInput ctx B.empty input
 
   where
+    -- Converts newInput with the given context
+    --
+    -- If converted is not empty, this will be prepended to
+    -- the converted output. This will happen if we're called
+    -- after the remainder of a previous conversion was consumed.
+    -- converted is the result of the remainder conversion.
+    --
+    -- If this conversion results in a remainder we return any
+    -- results we got so far but will use convertInputWithRemaining
+    -- with the remainder for the next call.
     convertInput ctx converted newInput
       | B.null newInput  =
             ConvertSuccess converted (convertInput ctx B.empty)
@@ -79,9 +89,24 @@ iconvConvert inputEncoding outputEncoding input =
                     InvalidInput              c _ -> if B.null c then
                                                          ConvertInvalidInputError
                                                      else
+                                                         -- Converted a bit but detected invalid input afterwards.
+                                                         -- Let's return what was converted so far and fail with
+                                                         -- the next call
                                                          ConvertSuccess c (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
+    -- Convert any remainder from a previous conversion. We do
+    -- this by first appending the first 32 bytes of the newInput
+    -- to the remainder. With 32 bytes additionally we should be
+    -- able to convert the remainder from any possible charset
+    -- encoding that has 32 *bytes* per character at maximum.
+    -- 4 would've been enough too probably.
+    --
+    -- If the conversion was successful, we take the remaining
+    -- newInput and the converted remainder, and hand it over
+    -- to the previous conversion function. Which then will
+    -- convert the remaining newInput and prepend the converted
+    -- remainder to it.
     convertInputWithRemaining ctx remaining newInput
       | B.null remaining =
             convertInput ctx B.empty newInput
@@ -95,16 +120,24 @@ iconvConvert inputEncoding outputEncoding input =
             in
                 case res of
                     Converted                 c r -> if processed < B.length remaining then
+                                                         -- Didn't convert the complete remainder. Let's try again next
+                                                         -- time with the additional newInput
                                                          ConvertSuccess B.empty (convertInputWithRemaining ctx (remaining `B.append` newInput))
                                                      else
+                                                         -- Converted the complete remainder. Now let's try to
+                                                         -- convert the remaining new input
                                                          convertInput ctx c (B.drop consumedInput newInput)
 
                                                      where
                                                          processed = B.length tmpInput - B.length r
                                                          consumedInput = processed - B.length remaining
                     MoreData                  c r -> if processed < B.length remaining then
+                                                         -- Didn't convert the complete remainder. Let's try again next
+                                                         -- time with the additional newInput
                                                          ConvertSuccess B.empty (convertInputWithRemaining ctx (remaining `B.append` newInput))
                                                      else
+                                                         -- Converted the complete remainder. Now let's try to
+                                                         -- convert the remaining new input
                                                          convertInput ctx c (B.drop consumedInput newInput)
 
                                                      where
@@ -113,6 +146,9 @@ iconvConvert inputEncoding outputEncoding input =
                     InvalidInput              c _ -> if B.null c then
                                                          ConvertInvalidInputError
                                                      else
+                                                         -- Converted a bit but detected invalid input afterwards.
+                                                         -- Let's return what was converted so far and fail with
+                                                         -- the next call
                                                          ConvertSuccess c (const ConvertInvalidInputError)
                     UnexpectedError (Errno errno) -> ConvertUnexpectedConversionError (show errno)
 
@@ -125,7 +161,7 @@ data IConvOpenError =
 
 iconvOpen :: String -> String -> Either IConvOpenError IConvT
 iconvOpen inputEncoding outputEncoding = unsafePerformIO $
-    mask_ $ do
+    mask_ $ do -- mask async exceptions, we might otherwise leak
     ptr <- withCString inputEncoding  $ \inputEncodingPtr  ->
            withCString outputEncoding $ \outputEncodingPtr ->
                 c_iconv_open outputEncodingPtr inputEncodingPtr
@@ -149,18 +185,36 @@ data IConvResult =
   | UnexpectedError Errno
 
 iconv :: IConvT -> B.ByteString -> B.ByteString -> IConvResult
-iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
+iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $
+    mask_ $ do -- mask async exceptions, we might otherwise leak
     let outputPrefixLen = B.length outputPrefix
         inputLen        = B.length input
+                          -- We allocate enough memory for the worst case: 1
+                          -- byte per character encodings to 4 bytes per
+                          -- character encodings (e.g. ASCII to UTF32).
+                          -- Additionally 16 bytes of padding just in case and
+                          -- the length of the converted prefix we have to
+                          -- prepend to the result
+                          --
+                          -- We overallocate here but will resize later. The
+                          -- alternative would be to produce potentially many
+                          -- smaller chunks of output.
         outputLen       = inputLen * 4 + 16 + outputPrefixLen
         convertLen      = outputLen - outputPrefixLen
 
+    -- We allocate via malloc(), which does not give us memory inside
+    -- the GC heap. But this allows us to realloc() the memory later
+    -- to the actual size.
     outputPtr <- mallocBytes outputLen
+
     BU.unsafeUseAsCString outputPrefix $ \outputPrefixPtr ->
         copyBytes outputPtr outputPrefixPtr outputPrefixLen
 
+    -- Newly converted output should start at this pointer
     let outputConvPtr = plusPtr outputPtr outputPrefixLen
 
+    -- Do the actual conversion and calculate how many bytes we
+    -- read and wrote to update our state
     (res, readCount, writeCount) <-
         withForeignPtr fPtr            $ \ptr              ->
         BU.unsafeUseAsCString input    $ \inputPtr         ->
@@ -169,6 +223,10 @@ iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
         with outputConvPtr             $ \outputConvPtrPtr ->
         with (fromIntegral convertLen) $ \convertLenPtr    -> do
             res        <- c_iconv ptr inputPtrPtr inputLenPtr outputConvPtrPtr convertLenPtr
+
+            -- The length pointers will be updated by iconv to the still
+            -- remaining length after conversion. That means we can calculate
+            -- the read/written number of bytes with: old - new
             readCount  <- (`subtract` inputLen)   . fromIntegral <$> peek inputLenPtr
             writeCount <- (`subtract` convertLen) . fromIntegral <$> peek convertLenPtr
             return (res, readCount, writeCount)
@@ -176,6 +234,13 @@ iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
     let remaining    = B.drop readCount input
         convertedLen = outputPrefixLen + writeCount
 
+    -- Reallocate the memory to a memory area of the actual size. This
+    -- potentially allows the OS to reuse any memory we allocated too much and
+    -- in general does not cause the memory to be copied.
+    --
+    -- This will return NULL if the output size is 0, but the resulting
+    -- ByteString will then be the empty ByteString as expected.
+    --
     -- Shadowing outputPtr to prevent accidential usage of old outputPtr
     outputPtr <- reallocBytes outputPtr convertedLen
     output <- BU.unsafePackMallocCStringLen (outputPtr, convertedLen)
@@ -185,18 +250,23 @@ iconv (IConvT fPtr) input outputPrefix = unsafePerformIO $ mask_ $ do
     else do
         errno <- getErrno
         case () of
+                -- The output buffer was too small! This should not happen
+                -- because we overallocate for any possible output charset
+                -- encoding
             _ | errno == e2BIG  -> return $
-                                       if writeCount == 0 then          -- we processed nothing and it's still too big?!
+                                       if writeCount == 0 then
                                            UnexpectedError errno
                                        else
                                            MoreData output remaining
 
-              | errno == eINVAL -> return $ Converted output remaining  -- nothing converted here is no error as with future data we might be able to convert
-              | errno == eILSEQ -> return $
-                                       if writeCount == 0 then          -- we processed nothing
-                                           UnexpectedError errno
-                                       else
-                                           InvalidInput output remaining
+                -- Incomplete byte sequence was detected, which we might be
+                -- able to convert with further input later
+              | errno == eINVAL -> return $ Converted output remaining
+
+                -- Invalid byte sequence was detected. We might've converted
+                -- something already but from here on we can't do anything
+              | errno == eILSEQ -> return $ InvalidInput output remaining
+
               | otherwise       -> return $ UnexpectedError errno
 
 
