@@ -1,5 +1,5 @@
 name:                  conduit-iconv
-version:               0.1.1.0
+version:               0.1.1.1
 synopsis:              Conduit for character encoding conversion.
 description:
     @conduit-iconv@ provides a Conduit for character encoding
@@ -20,8 +20,7 @@ library
                      , bytestring >= 0.10.4 && < 0.11
   default-language:    Haskell2010
   ghc-options:         -Wall
-  includes:            hsiconv.h
-  include-dirs:        cbits
+  includes:            iconv.h
   c-sources:           cbits/hsiconv.c
   if os(darwin) || os(freebsd)
     -- on many systems the iconv api is part of the standard C library
