@@ -15,6 +15,15 @@ import qualified Data.Conduit.IConv as I
 import Test.Framework
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 
+import Test.QuickCheck (Arbitrary(..), suchThatMap)
+
+-- Like a String but filter out anything that can't be represented in Latin1
+newtype Latin1 = Latin1 String
+    deriving(Show)
+instance Arbitrary Latin1 where
+    arbitrary = suchThatMap arbitrary isValid
+        where isValid s = if s == BC.unpack (BC.pack s) then Just (Latin1 s) else Nothing
+
 -- Divide a bytestring into up to 5 chunks
 chunkByteString :: Int -> Int -> Int -> Int -> Int -> B.ByteString -> [B.ByteString]
 chunkByteString n a b c d s = case n `mod` 5 of
@@ -37,8 +46,8 @@ chunkByteString n a b c d s = case n `mod` 5 of
                                 safeMod _ 0 = 0
                                 safeMod m o = abs $ m `mod` abs o
 
-prop_identityLatin1ToUTF8 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
-prop_identityLatin1ToUTF8 = prop_identity BC.pack "Latin1" (T.unpack . TE.decodeUtf8) "UTF-8"
+prop_identityLatin1ToUTF8 :: Latin1 -> Int -> Int -> Int -> Int -> Int -> Bool
+prop_identityLatin1ToUTF8 (Latin1 s) = prop_identity BC.pack "Latin1" (T.unpack . TE.decodeUtf8) "UTF-8" s
 
 prop_identityUTF8ToUTF16 :: String -> Int -> Int -> Int -> Int -> Int -> Bool
 prop_identityUTF8ToUTF16 = prop_identity (TE.encodeUtf8 . T.pack) "UTF-8" (T.unpack . TE.decodeUtf16LE) "UTF-16LE"
@@ -70,8 +79,9 @@ prop_identity ::    (String -> BC.ByteString)
                  -> Int
                  -> Bool
 prop_identity encode encodeTo decode decodeTo inString n a b c d = inString == output
-    where input = chunkByteString n a b c d . encode $ inString
-          converted = runIdentity $ CL.sourceList input $$ I.convert encodeTo decodeTo =$ CL.consume
+    where input = encode inString
+          inputChunked = chunkByteString n a b c d input
+          converted = runIdentity $ CL.sourceList inputChunked $$ I.convert encodeTo decodeTo =$ CL.consume
           output = decode . B.concat $ converted
 
 main :: IO ()
