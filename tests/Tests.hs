@@ -15,14 +15,14 @@ import qualified Data.Conduit.IConv as I
 import Test.Framework
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 
-import Test.QuickCheck (Arbitrary(..), suchThatMap)
+import Test.QuickCheck (Arbitrary(..), suchThat)
 
 -- Like a String but filter out anything that can't be represented in Latin1
 newtype Latin1 = Latin1 String
     deriving(Show)
 instance Arbitrary Latin1 where
-    arbitrary = suchThatMap arbitrary isValid
-        where isValid s = if s == BC.unpack (BC.pack s) then Just (Latin1 s) else Nothing
+    arbitrary = fmap Latin1 (suchThat arbitrary isValid)
+        where isValid s = s == BC.unpack (BC.pack s)
 
 -- Divide a bytestring into up to 5 chunks
 chunkByteString :: Int -> Int -> Int -> Int -> Int -> B.ByteString -> [B.ByteString]
