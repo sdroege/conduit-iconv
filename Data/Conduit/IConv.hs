@@ -34,9 +34,9 @@ type CharacterEncoding = String
 -- Without this encoding errors will cause an exception.
 --
 -- On errors this will call `fail`
-convert :: Monad m => CharacterEncoding -- ^ Name of input character encoding
-                   -> CharacterEncoding -- ^ Name of output character encoding
-                   -> Conduit B.ByteString m B.ByteString
+convert :: MonadFail m => CharacterEncoding -- ^ Name of input character encoding
+                       -> CharacterEncoding -- ^ Name of output character encoding
+                       -> Conduit B.ByteString m B.ByteString
 convert inputEncoding outputEncoding = run initialConvert
   where
     initialConvert = iconvConvert inputEncoding outputEncoding
