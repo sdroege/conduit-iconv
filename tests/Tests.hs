@@ -1,6 +1,9 @@
 module Main where
 
+import Data.Either
+
 import Control.Monad.Identity
+import Control.Monad.Error
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
@@ -81,8 +84,8 @@ prop_identity ::    (String -> BC.ByteString)
 prop_identity encode encodeTo decode decodeTo inString n a b c d = inString == output
     where input = encode inString
           inputChunked = chunkByteString n a b c d input
-          converted = runIdentity $ CL.sourceList inputChunked $$ I.convert encodeTo decodeTo =$ CL.consume
-          output = decode . B.concat $ converted
+          converted = runIdentity $ runErrorT $ CL.sourceList inputChunked $$ I.convert encodeTo decodeTo =$ CL.consume
+          output = decode . B.concat $ either error id converted
 
 main :: IO ()
 main = defaultMain tests
